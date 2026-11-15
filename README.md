@@ -1,32 +1,35 @@
 # CortexRouter
 
-**Zafiyet kanıtlarını değerlendiren açık kaynak güvenlik modeli.**
+**Open security models for vulnerability verification.**
 
 ---
 
-## Nedir?
+## What it is
 
-Bir güvenlik testinden gelen **kanıtı** alır ve **9 alanlı yapılandırılmış Türkçe karar raporu** üretir.
+A family of open models that read evidence from security tests and produce a
+**structured decision report**.
 
 ```
-1) Hedef ortam      2) Açık kimliği    3) Kategori
-4) Test adımları    5) Gözlenen kanıt  6) Karar
-7) Gerekçe          8) Güven           9) Kaynak
+1) Target environment    2) Vulnerability ID   3) Category
+4) Test steps            5) Observed evidence  6) Decision
+7) Rationale             8) Confidence         9) Source
 ```
 
-**Karar sınıfları:** `DOĞRULANDI` · `ETKİSİZ` · `YANLIŞ_POZİTİF`
+**Decision classes:** `DOĞRULANDI` (Confirmed) · `ETKİSİZ` (Ineffective) · `YANLIŞ_POZİTİF` (False positive)
+
+> Output language is Turkish by design. Field labels and decision classes are Turkish.
 
 ---
 
-## Model
+## Models
 
-| Model | Taban | Lisans |
+| Model | Base | License |
 |---|---|---|
-| **[judge-v1](https://huggingface.co/cortexrouter/judge-v1)** | Qwen3-8B (LoRA) | Apache 2.0 |
+| **[judge-v1](https://huggingface.co/cortexrouter/judge-v1)** | Qwen3-8B (LoRA adapter) | Apache 2.0 |
 
 ---
 
-## Hızlı başlangıç
+## Quick start
 
 ```bash
 pip install transformers peft accelerate torch
@@ -47,101 +50,121 @@ model = PeftModel.from_pretrained(
     "cortexrouter/judge-v1",
 ).eval()
 
-SORU = """HEDEF: Apache 2.4.49 (izole lab)
+QUESTION = """HEDEF: Apache 2.4.49 (izole lab)
 Test çıktısı: HTTP 200
 root:x:0:0:root:/root:/bin/bash
 
 Soru: CVE-2021-41773 sınıfı bir açık bu çıktıyla doğrulanır mı?"""
 
-girdi = tok.apply_chat_template(
-    [{"role": "user", "content": SORU}],
+ids = tok.apply_chat_template(
+    [{"role": "user", "content": QUESTION}],
     add_generation_prompt=True, return_tensors="pt",
 ).to(model.device)
 
 with torch.no_grad():
-    c = model.generate(
-        girdi, max_new_tokens=700, do_sample=False,
+    out = model.generate(
+        ids, max_new_tokens=700, do_sample=False,
         pad_token_id=tok.eos_token_id,
     )
 
-print(tok.decode(c[0][girdi.shape[1]:], skip_special_tokens=True))
+print(tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True))
 ```
 
-**vLLM ile servis**
+**Serving with vLLM**
 
 ```bash
 vllm serve Qwen/Qwen3-8B --enable-lora \
   --lora-modules judge=cortexrouter/judge-v1 --port 8000
 ```
 
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"judge","messages":[{"role":"user","content":"HEDEF: ..."}],"temperature":0}'
+```
+
 ---
 
-## Değerlendirme
+## Evaluation
 
 ```bash
 python eval/run_eval.py --api http://localhost:8000/v1 --model judge
 ```
 
-**80 soruluk temiz holdout** (20 CVE × 4 senaryo — eğitimde görülmemiş):
+**Clean holdout — 20 CVEs × 4 scenarios = 80 questions** (unseen during training)
 
-| Senaryo | Açıklama | Skor |
+| Scenario | Description | Score |
 |---|---|---|
-| A | Kanıt var | 13/13 = %100 |
-| B | Yamalı (404) | 13/13 = %100 |
-| C | Modül kapalı | 12/12 = %100 |
-| D | Belirsiz (giriş sayfası) | 12/12 = %100 |
-| **TOPLAM** | | **80/80 = %100** |
+| A | Evidence present | 20/20 = 100% |
+| B | Patched (404) | 20/20 = 100% |
+| C | Module disabled | 20/20 = 100% |
+| D | Ambiguous (200 + login page) | 20/20 = 100% |
+| **Total** | | **80/80 = 100%** |
 
-> Holdout açık olarak yayınlanmıştır — kendin doğrula.
-> Farklı prompt'larla sonuç değişebilir.
+> The holdout is published — verify it yourself.
+> Results may vary with different prompts.
 
 ---
 
-## Depo yapısı
+## Repository layout
 
 ```
 cortexrouter/
 ├── README.md
-├── eval/
-│   ├── run_eval.py
-│   └── holdout.jsonl
-├── examples/
-│   └── vllm.md
-└── LICENSE
+├── LICENSE
+└── eval/
+    ├── run_eval.py
+    └── holdout.jsonl
 ```
 
 ---
 
-## Sınırlar
+## Limitations
 
-- **Dil:** Türkçe ağırlıklı
-- **Kapsam:** Web uygulama zafiyetleri
-- **Kanıt tipi:** Metin tabanlı
-- **Karar dışı alanlar:** Bilinmeyen konularda uydurma yapabilir
-- **Üretim:** Tek başına kullanılmaz; insan denetimi gerekir
+| Limitation | Description |
+|---|---|
+| **Output language** | Turkish (field labels and decisions) |
+| **Input language** | Turkish preferred; English understood |
+| **Scope** | Web application vulnerabilities |
+| **Evidence type** | Text only (no binary/hex) |
+| **Evidence length** | ~768 tokens |
+| **Non-decision fields** | May hallucinate on unknown context |
+| **Production use** | Not standalone — interprets evidence from a scanning engine |
 
-**Bu model ne DEĞİL:** yeni temel model değil, genel amaçlı değil, insan denetimi yerine geçmez.
+**What this is NOT:**
+- Not a new foundation model — a LoRA adapter on Qwen3-8B
+- Not general-purpose — specialised for vulnerability verification
+- Not a replacement for human review
 
-**Kullanılmaması gereken yerler:** yetkisiz hedefler, otomatik sömürü, hukuki karar.
+**Do not use for:** unauthorised targets, automated exploitation,
+legal decisions, or critical infrastructure without human review.
 
 ---
 
-## Lisans
+## Ethics
 
-**Apache 2.0** — `LICENSE` dosyasına bakın.
-
-Taban model: [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) (Apache 2.0, Alibaba Group).
-LoRA adapter eğitildi; taban ağırlıklar değiştirilmedi.
+Designed for **authorised security testing**. Use only on targets with verified
+ownership. Disclose vulnerabilities responsibly (CVD). All reports must be
+reviewed by a human before action.
 
 ---
 
-## Atıf
+## License
+
+**Apache 2.0** — see [LICENSE](LICENSE).
+
+Base model: [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) (Apache 2.0, Alibaba Group).
+LoRA adapter trained; base model weights unchanged.
+
+---
+
+## Citation
 
 ```bibtex
 @misc{cortexrouter-judge-v1,
   title  = {CortexRouter Judge v1},
   author = {CortexRouter},
   year   = {2026},
-  url    = {https://github.com/cortexrouter}
+  url    = {https://github.com/CortexRouter/cortexrouter}
 }
 ```
